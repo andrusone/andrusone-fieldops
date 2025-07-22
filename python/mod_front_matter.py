@@ -17,6 +17,8 @@ import frontmatter
 from pathlib import Path
 import re
 import yaml
+from datetime import datetime
+import shutil
 
 def detect_format(fm: dict) -> str:
     if "type" in fm or "author" in fm or "ShowReadingTime" in fm:
@@ -73,6 +75,12 @@ def main():
             overrides.append((key, value))
         post.metadata = update_or_insert(post.metadata, overrides)
         print("Applied overrides.")
+
+    # Create backup
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    backup_path = args.filepath.parent / f"mfm_{timestamp}_{args.filepath.name}"
+    shutil.copy2(args.filepath, backup_path)
+    print(f"Backup created: {backup_path}")
 
     # Rewrite file
     with open(args.filepath, "w", encoding="utf-8") as f:
