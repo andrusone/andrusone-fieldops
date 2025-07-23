@@ -1,84 +1,125 @@
 #!/usr/bin/env python3
 """
-compose.py – Multi-step prompt composition engine using OpenAI
+generate_combinations.py – Structured prompt runner for profession/activity/feeling workflows
 
-Purpose:
-    This script automates AI-assisted content generation using a configurable workflow.
-    It reads topics from a text file and applies a series of templated AI prompts to
-    each topic, passing results from one step to the next.
-
-Audience:
-    Engineers, content creators, and automation builders who need reliable,
-    repeatable prompt workflows with minimal configuration.
-
-Value Created:
-    - Converts simple topic lists into polished multi-step AI outputs
-    - Enables templated prompt reuse with system and user roles
-    - Scales creative or editorial pipelines using GPT models
+Supports:
+- Loading profession-activity and feeling dictionaries
+- Running a multi-step workflow with named steps
+- Referencing prior step outputs via `{r:step_name}`
+- Saving full response trace per run as a .dict file
 
 Usage:
-    python compose.py [--topics topics.txt] [--workflow prompt_workflow.yaml] [--output-dir outputs/]
-
-Value Realized:
-    Outputs are saved to the specified output directory, named per topic,
-    ready for downstream publishing or review.
-
-Design:
-    - Uses `submit_prompt.py` for OpenAI chat completions
-    - Prompts are chained, with each step's output used as input for the next
-    - Templates support `{topic}` and `{input}` for flexible chaining
+    python generate_combinations.py \
+        --professions data/professions.yaml \
+        --feelings data/feelings.yaml \
+        --workflow test-compose.yaml
 """
 
 import os
-import argparse
+import re
+import json
 import yaml
-from submit_prompt import submit_prompt
+import argparse
+from submit_prompt import run_chat_prompt
 
-def load_topics(filepath):
-    """Load topic list from file, one topic per line."""
-    with open(filepath, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
+
+def load_data(filepath):
+    with open(filepath, 'r', encoding='utf-8') as f:
+        if filepath.endswith(".json"):
+            return json.load(f)
+        elif filepath.endswith((".yaml", ".yml")):
+            return yaml.safe_load(f)
+        else:
+            raise ValueError(f"Unsupported file type: {filepath}")
+
 
 def load_workflow(filepath):
-    """Load YAML-based multi-step prompt workflow."""
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-def run_workflow_on_topic(topic, workflow):
-    """
-    Apply the full prompt workflow to a single topic.
 
-    Args:
-        topic (str): The topic to generate content for.
-        workflow (list): List of prompt steps with 'system' and 'prompt'.
+def slugify(text):
+    return text.lower().replace(" ", "_").replace(",", "").replace(":", "").replace("-", "_")
 
-    Returns:
-        str: Final output after running all steps.
+
+def substitute_prompt_template(template, context, response_dict):
     """
-    data = topic
+    Replace {input}, {profession}, etc. with context
+    Replace {r:step_name} with the value of that step's response
+    """
+    def replace_token(match):
+        token = match.group(1)
+        if token.startswith("r:"):
+            step_key = token[2:]
+            return response_dict.get(step_key, f"[MISSING:{step_key}]")
+        return context.get(token, f"[UNKNOWN:{token}]")
+
+    return re.sub(r"\{([^\}]+)\}", replace_token, template)
+
+
+def run_workflow(context, workflow):
+    """Run each step and capture all responses into a dictionary keyed by step name."""
+    responses = {}
+    print (context)
     for step in workflow:
-        prompt = step["prompt"].format(topic=topic, input=data)
-        response = submit_prompt(prompt, system_prompt=step.get("system"))
-        data = response
-    return data
+        step_name = step["name"]
+        prompt = substitute_prompt_template(step["prompt"], context, responses)
+        system_prompt = substitute_prompt_template(step.get("system", ""), context, responses)
+        print (step_name + " - " + prompt)
+
+        result = run_chat_prompt(prompt, system_prompt=system_prompt)
+        responses[step_name] = result
+    return responses
+
+
+def write_dict(path, data):
+    if path.endswith(".json"):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    else:
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, sort_keys=False, allow_unicode=True)
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Compose multi-step AI prompts from a topic list.")
-    parser.add_argument("--topics", default="topics.txt", help="Path to the topic list file")
-    parser.add_argument("--workflow", default="prompt_workflow.yaml", help="Path to the workflow YAML file")
-    parser.add_argument("--output-dir", default="outputs/", help="Directory to write final outputs")
+    parser = argparse.ArgumentParser(description="Run AI prompt workflows on structured profession/feeling input.")
+    parser.add_argument("--professions", required=True, help="Path to professions YAML/JSON file")
+    parser.add_argument("--feelings", required=True, help="Path to feelings YAML/JSON file")
+    parser.add_argument("--workflow", required=True, help="Path to prompt workflow YAML file")
+    parser.add_argument("--output-dir", default="outputs", help="Directory to write results (default: outputs/)")
 
     args = parser.parse_args()
-
     os.makedirs(args.output_dir, exist_ok=True)
-    topics = load_topics(args.topics)
+
+    professions = load_data(args.professions)
+    feelings = load_data(args.feelings)
     workflow = load_workflow(args.workflow)
 
-    for topic in topics:
-        final_output = run_workflow_on_topic(topic, workflow)
-        output_path = os.path.join(args.output_dir, f"{topic.replace(' ', '_')}.txt")
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(final_output)
+    for profession, activities in professions.items():
+        for activity in activities:
+            for feeling_category, feeling_list in feelings.items():
+                for feeling in feeling_list:
+                    context = {
+                        "profession": profession,
+                        "activity": activity,
+                        "feeling": feeling,
+                        "feeling_category": feeling_category,
+                        "input": f"A {profession} who is feeling {feeling} while {activity}"
+                    }
+
+                    responses = run_workflow(context, workflow)
+
+                    filename_base = f"{slugify(profession)}_{slugify(activity)}_{slugify(feeling)}"
+                    text_output = os.path.join(args.output_dir, f"{filename_base}.txt")
+                    dict_output = os.path.join(args.output_dir, f"{filename_base}.dict.yaml")
+
+                    # Final step output
+                    last_step = workflow[-1]["name"]
+                    with open(text_output, "w", encoding="utf-8") as f:
+                        f.write(responses[last_step])
+
+                    # Full response dictionary
+                    write_dict(dict_output, responses)
 
 if __name__ == "__main__":
     main()

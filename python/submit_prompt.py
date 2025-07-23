@@ -117,6 +117,20 @@ def submit_prompt(prompt: str, output_type: str, output_path: Optional[str] = No
 
     return written_files
 
+def run_chat_prompt(prompt: str, system_prompt: Optional[str] = None, model: str = "gpt-4o") -> str:
+    """Run a ChatCompletion with optional system prompt. Returns response text only."""
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages
+    )
+
+    return response.choices[0].message.content.strip()
+
 # ---------------------- CLI Entry ---------------------- #
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Submit a prompt to OpenAI.")

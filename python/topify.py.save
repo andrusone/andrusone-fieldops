@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""
+generate_combinations.py – Workflow runner for [profession → activity → feeling] combinations
+
+Purpose:
+    Expands structured profession + activity + emotion dictionaries into generated content using
+    a prompt workflow (e.g. limerick creation, merch captioning, etc.)
+
+Usage:
+    python generate_combinations.py \
+        --professions data/professions.yaml \
+        --feelings data/feelings.yaml \
+        --workflow prompt_workflow.yaml
+
+Expected Input:
+    - Professions file (YAML/JSON):
+        Doctor:
+          - Diagnosing complex medical conditions under time pressure
+          - Explaining life-altering diagnoses...
+
+    - Feelings file (YAML/JSON):
+        Joy:
+          - contentment
+          - amusement
+        Sadness:
+          - disappointment
+          - grief
+
+    - Workflow file: Same format as used by compose.py
+
+Output:
+    One file per profession/activity/feeling triple in outputs/<slugified_name>.txt
+"""
+
+import os
+import json
+import yaml
+import argparse
+from submit_prompt import submit_prompt
+
+
+def load_data(filepath):
+    """Load YAML or JSON from disk."""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        if filepath.endswith(".json"):
+            return json.load(f)
+        elif filepath.endswith((".yaml", ".yml")):
+            return yaml.safe_load(f)
+        else:
+            raise ValueError(f"Unsupported file type: {filepath}")
+
+
+def load_workflow(filepath):
+    with open(filepath, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f)
+
+
+def slugify(text):
+    return text.lower().replace(" ", "_").replace(",", "").replace(":", "").replace("-", "_")
+
+
+def run_workflow(context, workflow):
+    """Run the prompt workflow using the provided context values."""
+    data = context["input"]
+    for step in workflow:
+        prompt = step["prompt"].format(input=data, **context)
+        response = submit_prompt(prompt, system_prompt=step.get("system"))
+        data = response
+    return data
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate AI content from profession/activity/feeling combinations.")
+    parser.add_argument("--professions", required=True, help="Path to professions YAML/JSON file")
+    parser.add_argument("--feelings", required=True, help="Path to feelings YAML/JSON file")
+    parser.add_argument("--workflow", required=True, help="Path to prompt workflow YAML file")
+    parser.add_argument("--output-dir", default="outputs", help="Directory to write results (default: outputs/)")
+
+    args = parser.parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    professions = load_data(args.professions)  # Dict[str, List[str]]
+    feelings = load_data(args.feelings)        # Dict[str, List[str]]
+    workflow = load_workflow(args.workflow)
+
+    for profession, activities in professions.items():
+        for activity in activities:
+            for feeling_category, feeling_list in feelings.items():
+                for feeling in feeling_list:
+                    context = {
+                        "profession": profession,
+                        "activity": activity,
+                        "feeling": feeling,
+                        "feeling_category": feeling_category,
+                        "input": f"A {profession} who is feeling {feeling} while {activity}"
+                    }
+
+                    result = run_workflow(context, workflow)
+
+                    filename = f"{slugify(profession)}_{slugify(activity)}_{slugify(feeling)}.txt"
+                    output_path = os.path.join(args.output_dir, filename)
+
+                    with open(output_path, "w", encoding="utf-8") as f:
+                        f.write(result)
+
+
+if __name__ == "__main__":
+    main()
+
